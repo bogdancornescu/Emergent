@@ -19,7 +19,7 @@ export function clearCanvas(ctx, width, height, color = '#0d0d0f') {
 
 // Linearly interpolate between two values
 export function lerp(a, b, t) {
-  return a + (a - b) * t;
+  return a + (b - a) * t;
 }
 
 // Clamp a value between min and max
@@ -36,6 +36,7 @@ export function dist(x1, y1, x2, y2) {
 
 // Map value from one range to another
 export function mapRange(value, inMin, inMax, outMin, outMax) {
+  if (inMax === inMin) return outMin;
   return outMin + (outMax - outMin) * ((value - inMin) / (inMax - inMin));
 }
 
