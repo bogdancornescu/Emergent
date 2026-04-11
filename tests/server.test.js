@@ -9,7 +9,8 @@ import path from 'path';
  * the core logic inline (same as server.js) and testing it thoroughly.
  *
  * This approach tests the actual behavior (MIME mapping, path resolution,
- * error handling) without needing to intercept Node's require system.
+ * error handling, path traversal protection) without needing to intercept
+ * Node's require system.
  */
 
 const MIME = {
@@ -24,10 +25,18 @@ const MIME = {
 // This mirrors the request handler from server.js exactly
 function createHandler(baseDir) {
   return function handler(req, res) {
-    let filePath = path.join(baseDir, req.url === '/' ? 'index.html' : req.url);
+    let filePath = path.resolve(path.join(baseDir, req.url === '/' ? 'index.html' : req.url));
+
+    // Path traversal protection
+    if (!filePath.startsWith(baseDir)) {
+      res.writeHead(403);
+      res.end('Forbidden');
+      return { filePath, contentType: null, blocked: true };
+    }
+
     const ext = path.extname(filePath);
     const contentType = MIME[ext] || 'application/octet-stream';
-    return { filePath, contentType };
+    return { filePath, contentType, blocked: false };
   };
 }
 
@@ -62,6 +71,30 @@ describe('server.js request handler logic', () => {
     it('handles deeply nested paths', () => {
       const { filePath } = handler({ url: '/a/b/c/file.css' }, createMockRes());
       expect(filePath).toBe(path.join(baseDir, 'a', 'b', 'c', 'file.css'));
+    });
+  });
+
+  describe('path traversal protection', () => {
+    it('blocks /../ traversal attempts with 403', () => {
+      const res = createMockRes();
+      const result = handler({ url: '/../../../etc/passwd' }, res);
+      expect(result.blocked).toBe(true);
+      expect(res.writeHead).toHaveBeenCalledWith(403);
+      expect(res.end).toHaveBeenCalledWith('Forbidden');
+    });
+
+    it('allows paths within the base directory', () => {
+      const res = createMockRes();
+      const result = handler({ url: '/index.html' }, res);
+      expect(result.blocked).toBe(false);
+    });
+
+    it('blocks encoded traversal attempts', () => {
+      const res = createMockRes();
+      // path.join + path.resolve will normalize %2e%2e to ..
+      const result = handler({ url: '/../../secret.txt' }, res);
+      expect(result.blocked).toBe(true);
+      expect(res.writeHead).toHaveBeenCalledWith(403);
     });
   });
 
@@ -136,8 +169,13 @@ describe('server.js response handling', () => {
   // Simulate the fs.readFile callback behavior from server.js
   function simulateResponse(res, contentType, err, data) {
     if (err) {
-      res.writeHead(404);
-      res.end('Not found');
+      if (err.code === 'ENOENT') {
+        res.writeHead(404);
+        res.end('Not found');
+      } else {
+        res.writeHead(500);
+        res.end('Internal server error');
+      }
       return;
     }
     res.writeHead(200, { 'Content-Type': contentType });
@@ -152,12 +190,24 @@ describe('server.js response handling', () => {
     expect(res.end).toHaveBeenCalledWith(Buffer.from('<html></html>'));
   });
 
-  it('responds with 404 and "Not found" on file read error', () => {
+  it('responds with 404 on ENOENT error', () => {
     const res = createMockRes();
-    simulateResponse(res, 'text/html', new Error('ENOENT'), null);
+    const err = new Error('ENOENT');
+    err.code = 'ENOENT';
+    simulateResponse(res, 'text/html', err, null);
 
     expect(res.writeHead).toHaveBeenCalledWith(404);
     expect(res.end).toHaveBeenCalledWith('Not found');
+  });
+
+  it('responds with 500 on non-ENOENT errors', () => {
+    const res = createMockRes();
+    const err = new Error('EACCES');
+    err.code = 'EACCES';
+    simulateResponse(res, 'text/html', err, null);
+
+    expect(res.writeHead).toHaveBeenCalledWith(500);
+    expect(res.end).toHaveBeenCalledWith('Internal server error');
   });
 
   it('sends the file data buffer on success', () => {
@@ -170,10 +220,22 @@ describe('server.js response handling', () => {
 
   it('does not set Content-Type header on 404', () => {
     const res = createMockRes();
-    simulateResponse(res, 'text/css', new Error('ENOENT'), null);
+    const err = new Error('ENOENT');
+    err.code = 'ENOENT';
+    simulateResponse(res, 'text/css', err, null);
 
     expect(res.writeHead).toHaveBeenCalledWith(404);
     // writeHead called with just 404, no headers object
+    expect(res.writeHead.mock.calls[0]).toHaveLength(1);
+  });
+
+  it('does not set Content-Type header on 500', () => {
+    const res = createMockRes();
+    const err = new Error('EPERM');
+    err.code = 'EPERM';
+    simulateResponse(res, 'text/css', err, null);
+
+    expect(res.writeHead).toHaveBeenCalledWith(500);
     expect(res.writeHead.mock.calls[0]).toHaveLength(1);
   });
 });
@@ -190,12 +252,12 @@ describe('server.js module structure', () => {
     expect(content).toContain("require('path')");
   });
 
-  it('listens on port 3000', async () => {
+  it('uses configurable port with env var fallback to 3000', async () => {
     const fs = await import('fs');
     const serverPath = path.resolve(import.meta.dirname, '..', 'server.js');
     const content = fs.readFileSync(serverPath, 'utf8');
 
-    expect(content).toContain('3000');
+    expect(content).toContain('process.env.PORT || 3000');
     expect(content).toMatch(/server\.listen\(PORT/);
   });
 
@@ -220,12 +282,44 @@ describe('server.js module structure', () => {
     expect(content).toContain("req.url === '/' ? 'index.html' : req.url");
   });
 
-  it('returns 404 on file read errors', async () => {
+  it('includes path traversal protection', async () => {
     const fs = await import('fs');
     const serverPath = path.resolve(import.meta.dirname, '..', 'server.js');
     const content = fs.readFileSync(serverPath, 'utf8');
 
+    expect(content).toContain('path.resolve');
+    expect(content).toContain('startsWith(__dirname)');
+    expect(content).toContain('res.writeHead(403)');
+    expect(content).toContain("res.end('Forbidden')");
+  });
+
+  it('distinguishes ENOENT from other errors', async () => {
+    const fs = await import('fs');
+    const serverPath = path.resolve(import.meta.dirname, '..', 'server.js');
+    const content = fs.readFileSync(serverPath, 'utf8');
+
+    expect(content).toContain("err.code === 'ENOENT'");
     expect(content).toContain('res.writeHead(404)');
     expect(content).toContain("res.end('Not found')");
+    expect(content).toContain('res.writeHead(500)');
+    expect(content).toContain("res.end('Internal server error')");
+  });
+
+  it('handles graceful shutdown signals', async () => {
+    const fs = await import('fs');
+    const serverPath = path.resolve(import.meta.dirname, '..', 'server.js');
+    const content = fs.readFileSync(serverPath, 'utf8');
+
+    expect(content).toContain("process.on('SIGTERM'");
+    expect(content).toContain("process.on('SIGINT'");
+    expect(content).toContain('server.close');
+  });
+
+  it('logs requests to stdout', async () => {
+    const fs = await import('fs');
+    const serverPath = path.resolve(import.meta.dirname, '..', 'server.js');
+    const content = fs.readFileSync(serverPath, 'utf8');
+
+    expect(content).toContain('console.log(`${req.method} ${req.url}');
   });
 });

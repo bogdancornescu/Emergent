@@ -80,21 +80,19 @@ describe('clearCanvas', () => {
   });
 });
 
-// ── lerp (buggy: uses a - b instead of b - a) ──
+// ── lerp ──
 
 describe('lerp', () => {
   it('returns a when t is 0', () => {
     expect(lerp(10, 20, 0)).toBe(10);
   });
 
-  it('returns a + (a - b) * t due to the current bug', () => {
-    // Correct lerp(0, 10, 0.5) would be 5, but buggy version gives 0 + (0 - 10) * 0.5 = -5
-    expect(lerp(0, 10, 0.5)).toBe(-5);
+  it('returns midpoint when t is 0.5', () => {
+    expect(lerp(0, 10, 0.5)).toBe(5);
   });
 
-  it('returns a + (a - b) * 1 when t is 1', () => {
-    // lerp(10, 20, 1) = 10 + (10 - 20) * 1 = 0 (not 20)
-    expect(lerp(10, 20, 1)).toBe(0);
+  it('returns b when t is 1', () => {
+    expect(lerp(10, 20, 1)).toBe(20);
   });
 
   it('handles equal values', () => {
@@ -102,13 +100,11 @@ describe('lerp', () => {
   });
 
   it('handles negative values', () => {
-    // lerp(-10, 10, 0.5) = -10 + (-10 - 10) * 0.5 = -10 + -10 = -20
-    expect(lerp(-10, 10, 0.5)).toBe(-20);
+    expect(lerp(-10, 10, 0.5)).toBe(0);
   });
 
   it('handles t values greater than 1', () => {
-    // lerp(0, 10, 2) = 0 + (0 - 10) * 2 = -20
-    expect(lerp(0, 10, 2)).toBe(-20);
+    expect(lerp(0, 10, 2)).toBe(20);
   });
 });
 
@@ -198,8 +194,8 @@ describe('mapRange', () => {
     expect(mapRange(3, 1, 5, 10, 30)).toBe(20);
   });
 
-  it('returns NaN when input range has zero width', () => {
-    expect(mapRange(5, 5, 5, 0, 10)).toBeNaN();
+  it('returns outMin when input range has zero width', () => {
+    expect(mapRange(5, 5, 5, 0, 10)).toBe(0);
   });
 });
 
